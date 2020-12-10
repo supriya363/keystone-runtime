@@ -1241,10 +1241,10 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
 {
 // printf("[RUNTIME] Handle Page Fault called for addr 0x%zx\n", addr);
 
-  simplepaging(addr,status_find_address);
+//  simplepaging(addr,status_find_address);
 //  printf("______XXXXXXXXXXXXXXXXXXXXXX__________________%d_____XXXXXXXXXXXXXXXXXXXXXXX__________________________\n",v_cache);
   //THIS RETURN ENSURES THAT THE OLD CODE DOES NOT EXECUTE
-  return;
+//  return;
   
   printf("[RUNTIME] Handle Page Fault called for addr 0x%zx\n", addr);
   if(first_fault)
@@ -1297,8 +1297,8 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
           uintptr_t stored_victim_page_addr=1;
           uintptr_t *status_find_pte_victim = __walk(root_page_table_addr,victim_page_enc);
           victim_page_org=__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);//UC THIS
-          int victim_page_dirty = 1;
-          if( (    (*status_find_pte_victim) & PTE_D ) || enable_oram==OPAM || enable_oram==ENC_PFH  ||  (   (exc==1) && (enable_oram==PATH_ORAM || enable_oram==RORAM )  )   )
+          //int victim_page_dirty = 1;
+          if((enable_oram==WORAM)|| (    (*status_find_pte_victim) & PTE_D ) || enable_oram==OPAM || enable_oram==ENC_PFH  ||  (   (exc==1) && (enable_oram==PATH_ORAM || enable_oram==RORAM )  )   )
           {
             // printf("[runtime] P.A of 0x%lx is 0x%lx\n",victim_page_enc, ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
             // printf("[runtime] P.A of 0x%lx is 0x%lx\n",addr, ( (*status_find_address)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
@@ -1428,12 +1428,14 @@ ff:            success=access_opam('w',vpn(victim_page_enc),(char*)__va(  ( (*st
                 else // If Victim Cache is disabled
                 {
                   store_victim_page_to_woram(victim_page_enc, victim_page_org, confidentiality, authentication);
-                  pages_written++;
+              	  free_page(vpn(victim_page_enc));
+	          alloc--;
+		  pages_written++;
                 }
                 
              }
           }
-          else // Victim Page isn't Dirty
+          /*else // Victim Page isn't Dirty
           {
             victim_page_dirty = 0; //mark it as not dirty
             // we invalidate the victim page's entry in case of WORAM 
@@ -1446,21 +1448,21 @@ ff:            success=access_opam('w',vpn(victim_page_enc),(char*)__va(  ( (*st
 
           if ( enable_oram == WORAM && (!v_cache || !victim_page_dirty))
           {
-            /* -----------------------------------------------------------------------------------
-                                          ONLY FOR WORAM
-            --------------------------------------------------------------------------------------
-              Free replaced page if
-                a) Either Victim Cache is disabled OR 
-                b) Victim cache is enabled but page to be replaced is not dirty
-              Else the replaced page resides in the victim cache inside the enclave
-              and hence shouldn't be freed. It's PTE entry has already been invalidated.
-            --------------------------------------------------------------------------------------
-            */
+            // -----------------------------------------------------------------------------------
+            //                              ONLY FOR WORAM
+            //--------------------------------------------------------------------------------------
+            //  Free replaced page if
+            //    a) Either Victim Cache is disabled OR 
+            //    b) Victim cache is enabled but page to be replaced is not dirty
+            //  Else the replaced page resides in the victim cache inside the enclave
+            //  and hence shouldn't be freed. It's PTE entry has already been invalidated.
+            //--------------------------------------------------------------------------------------
+            //
 
             free_page(vpn(victim_page_enc));
             alloc--;
 
-          }
+          }*/
           if( enable_oram != WORAM) //original code for other page fault handlers
           {
             free_page(vpn(victim_page_enc));
