@@ -399,10 +399,16 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
   // BY PASSING A FLAG TO THIS FUNCTION
   // Step 2 - Write the page contents to ORAM
   uintptr_t *pte = __walk(get_root_page_table_addr(),page_out);
-  if( (*pte) & PTE_D)
-    store_victim_page_to_woram(page_out, page_out_va, confidentiality, authentication);
+  if( (*pte) & PTE_D){
+    if(enable_oram == WORAM)   store_victim_page_to_woram(page_out, page_out_va, confidentiality, authentication);
+    else if (enable_oram==PATH_ORAM)  access('w',vpn(page_out),(char*)page_out_va,NULL,0);
+    
+
+    pages_written++;
+  }
+    
   
-  pages_written++;
+  
 
   // Step 3 - Remove the page from cache
   remove_lru_page_from_cache();
@@ -410,7 +416,10 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
 
   // Step 4 - Free the page (Cache has 1 free page now)
   free_page(vpn(page_out));
-  
+  if(enable_oram!=WORAM){
+    alloc--;
+    *pte = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
+  }
 
   // Step 5 - Add replaced page to cache 
   move_page_to_cache_from_enclave(addr);
@@ -799,6 +808,32 @@ void kickPathORAM(uintptr_t victim_page_enc, uintptr_t *status_find_pte_victim){
   access('w',vpn(victim_page_enc),(char*)__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);
 }
 
+void kickPathORAM_with_victim_cache(uintptr_t vicPageEnc, uintptr_t *victimPTE,uintptr_t addr){
+  if(v_cache){
+	  printf("infi loop\n");
+    if(first_page_replacement){
+      initialize_victim_cache();
+      first_page_replacement=0;
+    }			
+    if(is_victim_cache_full())
+      write_to_victim_cache_handle_full(vicPageEnc, addr);
+
+    else
+      move_page_to_cache_from_enclave(vicPageEnc);
+
+    *victimPTE = (*victimPTE) & ~PTE_V;
+
+    return;
+  }
+  printf("infi loop2\n");
+  access('w',vpn(vicPageEnc),(char*)__va(  ( (*victimPTE)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);  
+  free_page(vpn(vicPageEnc));	//free the page, so that sp_get() has free pages to work with.
+  *victimPTE  = (*victimPTE) & ~PTE_V;
+  alloc--;
+  *victimPTE = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
+}
+
+
 void kickOPAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t *status_find_pte_victim, uintptr_t victim, uintptr_t *root_page_table_addr){
   int success=0;
   uintptr_t fail_cnt=0;
@@ -808,8 +843,7 @@ ff:
   {
     place_new_page(  victim_page_org,victim_page_enc);
     fail_cnt++;
-    if(fail_cnt>=(get_queue_size()-3))
-    {
+    if(fail_cnt>=(get_queue_size()-3)){
       remap_all();
       fail_cnt=0;
     }
@@ -852,9 +886,8 @@ void kickWORAM(uintptr_t vicPageEnc, uintptr_t vicPageVA, uintptr_t *victimPTE, 
 	
 }
 
-
 void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
-//	printf("[RUNTIME] Handle Page Fault called for addr 0x%zx\n", addr);
+  // printf("[RUNTIME] Handle Page Fault called for addr 0x%zx\n", addr);
 	uintptr_t current_q_size=(uintptr_t)get_queue_size();
 	if(first_fault)			//Initialize variables such as free_pages_fr and ORAM paramenters, in case an ORAM is being used
 	  	setup_page_fault_handler(addr, faultingPagePTE);
@@ -880,19 +913,19 @@ void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
 
 	//Kick only if we are out of space in the initial free pages... other wise jist spa_get() and return!
 	if (current_q_size + init_num_pages + victim_page_reserved>= free_pages_fr)	{
-		uintptr_t victim = remove_victim_page();
-    		uintptr_t *rootPTE=get_root_page_table_addr();
-	    	uintptr_t vicPageEnc = pop_item[1];	
-    		uintptr_t vicPageVA=get_runtime_addr(vicPageEnc);
-	    	uintptr_t *victimPTE = __walk(rootPTE,vicPageEnc);
-    		if(victim!=QUEUE_EMPTY){
-	      		if(enable_oram == WORAM) kickWORAM(vicPageEnc, vicPageVA, victimPTE, addr);
-    		}
-	  	else{
-	      		printf("[RUNTIME]: Could not find a victim. Exiting...");
-      			sbi_exit_enclave(-1);
-	    	}	
-  	}
+    uintptr_t victim = remove_victim_page();
+    uintptr_t *rootPTE=get_root_page_table_addr();
+    uintptr_t vicPageEnc = pop_item[1];	
+    uintptr_t vicPageVA=get_runtime_addr(vicPageEnc);
+    uintptr_t *victimPTE = __walk(rootPTE,vicPageEnc);
+    if(victim!=QUEUE_EMPTY){
+      if(enable_oram == WORAM) kickWORAM(vicPageEnc, vicPageVA, victimPTE, addr);
+    }
+  	else{
+      printf("[RUNTIME]: Could not find a victim. Exiting...");
+      sbi_exit_enclave(-1);
+    }
+  }
 	
 	//If first replacement has not happened yet, then in no way can the victim cache be useful.
 	if(v_cache && !first_page_replacement && is_in_victim_cache(addr)){	
@@ -921,13 +954,11 @@ void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
 	
 }
 
-
-
 void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
 {
-  demand_paging(addr,status_find_address);
+//  demand_paging(addr,status_find_address);
 //  THIS RETURN ENSURES THAT THE OLD CODE DOES NOT EXECUTE
-  return;
+//  return;
   
   printf("[runtime] Handle Page Fault called for addr 0x%zx\n", addr);
   if(first_fault)
@@ -985,7 +1016,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
                kick_ENC_PFH(victim_page_enc,victim_page_org);
              }
              else if(enable_oram==PATH_ORAM){// by ORAM
-               kickPathORAM(victim_page_enc, status_find_pte_victim);
+               kickPathORAM_with_victim_cache(victim_page_enc, status_find_pte_victim, addr);
              }
              else if(enable_oram==OPAM)// by OPAM
              {
@@ -1001,7 +1032,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
              }
           }
           
-          if( enable_oram != WORAM) //original code for other page fault handlers
+          if( enable_oram != WORAM && enable_oram != PATH_ORAM) //original code for other page fault handlers
           {
             free_page(vpn(victim_page_enc));
             alloc--;
@@ -1020,7 +1051,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
       {
         int cache_hit = is_in_victim_cache(addr);
         printf("[runtime] Addr 0x%zx is in victim cache? %d\n", addr, cache_hit);
-        if(cache_hit && enable_oram == WORAM)
+        if(cache_hit && (enable_oram == WORAM || enable_oram==PATH_ORAM))
         {
           move_page_to_enclave_from_cache(addr);
           printf("[runtime] Before validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
@@ -1230,7 +1261,6 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
       sbi_exit_enclave(-1);
     }
 }
-
 //------------------------------------------------------------------------------
 uintptr_t rt_handle_sbrk(size_t bytes)
 {
