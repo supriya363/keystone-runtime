@@ -110,7 +110,7 @@ uint8_t z1[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x1
 uint8_t z2[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
 
 char sss[30];
-#define THRESHOLD_OPS 120000
+#define THRESHOLD_OPS 999999999
 
 uintptr_t unplaced_pages_count=0;
 
@@ -188,8 +188,8 @@ double ceil(double x)
 }
 
 char *firstimeaccess;
-//--------------------------------------------------------------------------------------------------------------------------------------
 
+//--------------------------------------------------------------------------------------------------------------------------------------
 size_t rt_util_getrandom(void* vaddr, size_t buflen){
   size_t remaining = buflen;
   uintptr_t rnd;
@@ -209,10 +209,6 @@ size_t rt_util_getrandom(void* vaddr, size_t buflen){
   size_t ret = buflen;
   return ret;
 }
-
-
-
-
 //--------------------------------------------------------------------------------------------------------------------------------------
 void rt_util_misc_fatal(){
   //Better hope we can debug it!
@@ -248,21 +244,17 @@ void ocall_get_page_contents_from_utm_enc_pfh(edge_data_t* retdata,uintptr_t arg
   return;
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
-
-
 void ocall_store_page_contents_to_utm(edge_data_t* retdata,uintptr_t args){// ocall that will bring a page
   printf("[dispatch ocall] pkgstr = retdata and args = vic_page\n");
   dispatch_edgecall_ocall(OCALL_STORE_CONTENT_TO_UTM, (void*)args, sizeof(pages), retdata, sizeof(edge_data_t),0);
   return;
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
-
 void ocall_store_page_contents_to_utm_enc_pfh(edge_data_t* retdata,uintptr_t args){// ocall that will bring a page
   dispatch_edgecall_ocall(OCALL_STORE_CONTENT_TO_UTM_ENC_PFH, (void*)args, sizeof(pages_at), NULL, 0,0);
   return;
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
-
 void display_page_contents(uintptr_t start)
 {
    for (size_t i = 0; i < (RISCV_PAGE_SIZE); i++) {
@@ -270,7 +262,7 @@ void display_page_contents(uintptr_t start)
    }
    printf("\n" );
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void calculate_hmac(pages* p, char* hm, uintptr_t hm_len)
 {
   char hash_calc[HASH_SIZE];
@@ -315,8 +307,6 @@ void calculate_hmac_for_enc_pfh(pages_at* p, char* hm, uintptr_t hm_len)
 //--------------------------------------------------------------------------------------------------------------------------------------
 void print_details()
 {
-
-
   counters[PAGES_READ].count=pages_read;
   counters[PAGES_WRITTEN].count=pages_written;
   counters[INIT_NUM_PAGES].count=init_num_pages;
@@ -366,12 +356,12 @@ void deplete_free_pages_for_testing(uintptr_t left)//this is only for testing
       assert(da >= freemem_va_start && da < (freemem_va_start  + freemem_size));
     }
 }
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
 char sourcet[4096];
 char destt[4096];
 char key_testing[AES_KEYLEN];
 char iv_testing[16];
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
 /* Convert enclave VA to runtime VA */
 uintptr_t get_runtime_addr(uintptr_t victim_page_enc)
 {
@@ -380,8 +370,7 @@ uintptr_t get_runtime_addr(uintptr_t victim_page_enc)
   uintptr_t va_runtime = __va(  ( (*pte)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS); //zero out the offset
   return va_runtime;
 }
-//------------------------------------------------------------------------------
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 //NOTE - JUST WRITES TO WORAM RIGHT NOW
 //REQUIREMENT - Victim Cache size should be atleast 1
 void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr) 
@@ -402,7 +391,11 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
   if( (*pte) & PTE_D){
     if(enable_oram == WORAM)   store_victim_page_to_woram(page_out, page_out_va, confidentiality, authentication);
     else if (enable_oram==PATH_ORAM)  access('w',vpn(page_out),(char*)page_out_va,NULL,0);
-    
+    else if(enable_oram==RORAM){
+      access_roram('w',vpn(page_out),(char*)page_out_va,NULL,0);
+      if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
+        sbi_exit_enclave(-1);
+    }
 
     pages_written++;
   }
@@ -416,7 +409,7 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
 
   // Step 4 - Free the page (Cache has 1 free page now)
   free_page(vpn(page_out));
-  if(enable_oram!=WORAM){
+  if(enable_oram!=WORAM){ // Just to be consistent with Nirjhar da's code. IDK why its there.
     alloc--;
     *pte = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
   }
@@ -424,7 +417,7 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
   // Step 5 - Add replaced page to cache 
   move_page_to_cache_from_enclave(addr);
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void setup_keys_and_buffer()
 {
   rt_util_getrandom((void*) key_aes, AES_KEYLEN);
@@ -435,21 +428,15 @@ void setup_keys_and_buffer()
 
   buff_size=BACKUP_BUFFER_SIZE_OTHERS;
   buff=(char*)malloc(BACKUP_BUFFER_SIZE_OTHERS*sizeof(char));
-
-  if(buff==NULL)
-  {
-    printf("[runtime] buff allocation failed\n" );
-    sbi_exit_enclave(-1);
-  }
   backup_shared_memory=(char*)malloc(BACKUP_BUFFER_SIZE_OTHERS*sizeof(char));
-
-  if(backup_shared_memory==NULL)
+  if(buff==NULL || backup_shared_memory==NULL)
   {
-    printf("[runtime] backup_shared_memory allocation failed\n" );
+    printf("[runtime] malloc error in setting up keys and bufer\n" );
     sbi_exit_enclave(-1);
   }
-}
 
+}
+//--------------------------------------------------------------------------------------------------------------------------------------
 void allocate_fresh_page(uintptr_t new_alloc_page, uintptr_t *status_find_address)
 {
   memset((void*)new_alloc_page, 0, RISCV_PAGE_SIZE);
@@ -458,7 +445,7 @@ void allocate_fresh_page(uintptr_t new_alloc_page, uintptr_t *status_find_addres
   *status_find_address = pte_create( ppn(__pa((uintptr_t)new_alloc_page) ), flags );
   asm volatile ("fence.i\t\nsfence.vma\t\n");
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void setup_page_fault_handler(uintptr_t addr, uintptr_t *status_find_address)
 {
   unsigned long long cycles1,cycles2;
@@ -748,25 +735,17 @@ void setup_page_fault_handler(uintptr_t addr, uintptr_t *status_find_address)
   asm volatile ("rdcycle %0" : "=r" (cycles2));
   oram_init_time=cycles2-cycles1;
 }
+//--------------------------------------------------------------------------------------------------------------------------------------
+void vcache_routine(uintptr_t vicPageEnc, uintptr_t *victimPTE, uintptr_t addr){
+  if(is_victim_cache_full())
+    write_to_victim_cache_handle_full(vicPageEnc, addr);
 
-/* uintptr_t from is runtime virtual address
- * uintptr_t addr is enclave virtual address
- */
-void write_page_at_address(uintptr_t addr, uintptr_t from){
-    uintptr_t utm = shared_buffer + 1048*1048;
-    memcpy((void*)(utm+addr), (void*)from, RISCV_PAGE_SIZE);
+  else
+    move_page_to_cache_from_enclave(vicPageEnc);
+
+  *victimPTE = (*victimPTE) & ~PTE_V;
 }
-
-/* uintptr_t addr is runtime virtual address
- * uintptr_t to is enclave virtual address
- */
-void read_page_from(uintptr_t addr, uintptr_t to)
-{	
-    uintptr_t utm = shared_buffer + 1048*1048;
-    memcpy((void *)to, (void*)(utm + addr), RISCV_PAGE_SIZE);
-}
-
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void kick_NoORAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t stored_victim_page_addr){
   pages_written++;
   edge_data_t pkgstr;
@@ -785,7 +764,7 @@ void kick_NoORAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t
   ocall_store_page_contents_to_utm((void*)&pkgstr,(uintptr_t)&vic_page);
   handle_copy_from_shared((void*)&stored_victim_page_addr,pkgstr.offset,pkgstr.size);
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void kick_ENC_PFH(uintptr_t victim_page_enc, uintptr_t victim_page_org){
   pages_written++;
   edge_data_t pkgstr;
@@ -803,37 +782,7 @@ void kick_ENC_PFH(uintptr_t victim_page_enc, uintptr_t victim_page_org){
   if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
     sbi_exit_enclave(-1);
 }
-
-void kickPathORAM(uintptr_t victim_page_enc, uintptr_t *status_find_pte_victim){
-  access('w',vpn(victim_page_enc),(char*)__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);
-}
-
-void kickPathORAM_with_victim_cache(uintptr_t vicPageEnc, uintptr_t *victimPTE,uintptr_t addr){
-  if(v_cache){
-	  printf("infi loop\n");
-    if(first_page_replacement){
-      initialize_victim_cache();
-      first_page_replacement=0;
-    }			
-    if(is_victim_cache_full())
-      write_to_victim_cache_handle_full(vicPageEnc, addr);
-
-    else
-      move_page_to_cache_from_enclave(vicPageEnc);
-
-    *victimPTE = (*victimPTE) & ~PTE_V;
-
-    return;
-  }
-  printf("infi loop2\n");
-  access('w',vpn(vicPageEnc),(char*)__va(  ( (*victimPTE)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);  
-  free_page(vpn(vicPageEnc));	//free the page, so that sp_get() has free pages to work with.
-  *victimPTE  = (*victimPTE) & ~PTE_V;
-  alloc--;
-  *victimPTE = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
-}
-
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void kickOPAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t *status_find_pte_victim, uintptr_t victim, uintptr_t *root_page_table_addr){
   int success=0;
   uintptr_t fail_cnt=0;
@@ -856,27 +805,25 @@ ff:
   if(tracing && (   (real_pages_written+real_pages_read)>THRESHOLD_OPS  ) )
     sbi_exit_enclave(-1);
 }
-
-void kickRORAM(uintptr_t victim_page_enc, uintptr_t *status_find_pte_victim){
-  access_roram('w',vpn(victim_page_enc),(char*)__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);
+//--------------------------------------------------------------------------------------------------------------------------------------
+void kickRORAM_with_victim(uintptr_t vicPageEnc, uintptr_t *victimPTE, uintptr_t addr){
+  if(v_cache){
+    vcache_routine(vicPageEnc, victimPTE, addr);
+    return;
+  }
+  access_roram('w',vpn(vicPageEnc),(char*)__va(  ( (*victimPTE)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);
   if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
     sbi_exit_enclave(-1);
+  
+  free_page(vpn(vicPageEnc));	//free the page, so that sp_get() has free pages to work with.
+  *victimPTE  = (*victimPTE) & ~PTE_V;
+  alloc--;
+  *victimPTE = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
 }
-
-void kickWORAM(uintptr_t vicPageEnc, uintptr_t vicPageVA, uintptr_t *victimPTE, uintptr_t addr){
+//--------------------------------------------------------------------------------------------------------------------------------------
+void kickWORAM_with_victim(uintptr_t vicPageEnc, uintptr_t vicPageVA, uintptr_t *victimPTE, uintptr_t addr){
   if(v_cache){
-    if(first_page_replacement){
-      initialize_victim_cache();
-      first_page_replacement=0;
-    }			
-    if(is_victim_cache_full())
-      write_to_victim_cache_handle_full(vicPageEnc, addr);
-
-    else
-      move_page_to_cache_from_enclave(vicPageEnc);
-
-    *victimPTE = (*victimPTE) & ~PTE_V;
-
+    vcache_routine(vicPageEnc, victimPTE, addr);
     return;
   }
   store_victim_page_to_woram(vicPageEnc, vicPageVA, confidentiality, authentication);
@@ -885,7 +832,19 @@ void kickWORAM(uintptr_t vicPageEnc, uintptr_t vicPageVA, uintptr_t *victimPTE, 
 	
 	
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
+void kickPathORAM_with_victim(uintptr_t vicPageEnc, uintptr_t *victimPTE, uintptr_t addr){
+  if(v_cache){
+    vcache_routine(vicPageEnc, victimPTE, addr);
+    return;
+  }
+  access('w',vpn(vicPageEnc),(char*)__va(  ( (*victimPTE)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS),NULL,0);  
+  free_page(vpn(vicPageEnc));	//free the page, so that sp_get() has free pages to work with.
+  *victimPTE  = (*victimPTE) & ~PTE_V;
+  alloc--;
+  *victimPTE = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
+}
+//--------------------------------------------------------------------------------------------------------------------------------------
 void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
   // printf("[RUNTIME] Handle Page Fault called for addr 0x%zx\n", addr);
 	uintptr_t current_q_size=(uintptr_t)get_queue_size();
@@ -919,7 +878,7 @@ void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
     uintptr_t vicPageVA=get_runtime_addr(vicPageEnc);
     uintptr_t *victimPTE = __walk(rootPTE,vicPageEnc);
     if(victim!=QUEUE_EMPTY){
-      if(enable_oram == WORAM) kickWORAM(vicPageEnc, vicPageVA, victimPTE, addr);
+      if(enable_oram == WORAM) kickWORAM_with_victim(vicPageEnc, vicPageVA, victimPTE, addr);
     }
   	else{
       printf("[RUNTIME]: Could not find a victim. Exiting...");
@@ -953,7 +912,7 @@ void demand_paging(uintptr_t addr, uintptr_t *faultingPagePTE){
 		get_page_from_woram(addr, newpage, faultingPagePTE, fault_mode, confidentiality, authentication);
 	
 }
-
+//--------------------------------------------------------------------------------------------------------------------------------------
 void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
 {
 //  demand_paging(addr,status_find_address);
@@ -963,7 +922,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
   printf("[runtime] Handle Page Fault called for addr 0x%zx\n", addr);
   if(first_fault)
     setup_page_fault_handler(addr, status_find_address);
-  
+
   uintptr_t *root_page_table_addr = get_root_page_table_addr();
   if(status_find_address==0)
         status_find_address=__walk(root_page_table_addr,addr);
@@ -974,286 +933,274 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
     sbi_exit_enclave(-1);
   }
 
-    if( (*status_find_address) & PTE_L  )// it is legal page but not present in memory
+  if( (*status_find_address) & PTE_L  )// it is legal page but not present in memory
+  {
+    countpf++;
+    uintptr_t source_page_VA=(*status_find_address)>>PTE_PPN_SHIFT; //get the physical address
+    int enable_swap_out = 1;enable_swap_out=enable_swap_out;
+    int threshold_number_of_pages=650000;threshold_number_of_pages=threshold_number_of_pages;// max number of user pages to be allocated at a time
+    uintptr_t current_q_size=0;// stores number of user pages currently allocated
+    current_q_size=(uintptr_t)get_queue_size();
+
+    uintptr_t allocated_pages_count= 130560+300 - spa_available()+6500-init_num_pages-6000;allocated_pages_count=allocated_pages_count;
+    unsigned long int victim_cache_assigned_pages = 0;
+    if(v_cache) victim_cache_assigned_pages =  MAX_VICTIM_CACHE_PAGES;
+    if(current_q_size + init_num_pages + victim_cache_assigned_pages >=free_pages_fr)
     {
-      countpf++;
-      uintptr_t source_page_VA=(*status_find_address)>>PTE_PPN_SHIFT; //get the physical address
-      int enable_swap_out = 1;enable_swap_out=enable_swap_out;
-      int threshold_number_of_pages=650000;threshold_number_of_pages=threshold_number_of_pages;// max number of user pages to be allocated at a time
-      uintptr_t current_q_size=0;// stores number of user pages currently allocated
-      current_q_size=(uintptr_t)get_queue_size();
-
-      uintptr_t allocated_pages_count= 130560+300 - spa_available()+6500-init_num_pages-6000;allocated_pages_count=allocated_pages_count;
-      unsigned long int victim_cache_assigned_pages = 0;
-      if(v_cache) victim_cache_assigned_pages =  MAX_VICTIM_CACHE_PAGES;
-      if(current_q_size + init_num_pages + victim_cache_assigned_pages >=free_pages_fr)
+      if(first_page_replacement == 1)
       {
-        if(first_page_replacement == 1)
-        {
-          first_page_replacement = 0;
-          if(v_cache)
-            initialize_victim_cache();
-        }
-        uintptr_t victim = remove_victim_page();
-        uintptr_t victim_page_enc=pop_item[1];
-        uintptr_t victim_page_org=0;
-        if(victim != QUEUE_EMPTY)
-        {
-          
-          uintptr_t stored_victim_page_addr=1;
-          uintptr_t *status_find_pte_victim = __walk(root_page_table_addr,victim_page_enc);// get the pte of this victim page by doing a pge table walk
-          victim_page_org=__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
-          if((enable_oram==WORAM)|| ((*status_find_pte_victim) & PTE_D ) || enable_oram==OPAM || enable_oram==ENC_PFH  ||  (   (exc==1) && (enable_oram==PATH_ORAM || enable_oram==RORAM )  )   )
-          {
-            if(debug)
-              printf("[runtime] addr = 0x%lx dirty\n",victim_page_enc );
-             if(enable_oram==NO_ORAM)
-             {
-               kick_NoORAM(victim_page_enc, victim_page_org, stored_victim_page_addr);
-             }
-             else if(enable_oram==ENC_PFH)
-             {
-               kick_ENC_PFH(victim_page_enc,victim_page_org);
-             }
-             else if(enable_oram==PATH_ORAM){// by ORAM
-               kickPathORAM_with_victim_cache(victim_page_enc, status_find_pte_victim, addr);
-             }
-             else if(enable_oram==OPAM)// by OPAM
-             {
-               kickOPAM(victim_page_enc, victim_page_org, status_find_pte_victim, victim, root_page_table_addr);
-             }
-             else if(enable_oram==RORAM)// by RING ORAM
-             {
-               kickRORAM(victim_page_enc, status_find_pte_victim);
-             }
-             else if(enable_oram==WORAM)
-             {
-                kickWORAM(victim_page_enc, victim_page_org, status_find_pte_victim, addr);
-             }
-          }
-          
-          if( enable_oram != WORAM && enable_oram != PATH_ORAM) //original code for other page fault handlers
-          {
-            free_page(vpn(victim_page_enc));
-            alloc--;
-            *status_find_pte_victim = (stored_victim_page_addr << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
-          }
-          
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-        }
-        else
-        {
-          printf("[runtime] Page replacement queue empty. Can't handle. \n" );
-          sbi_exit_enclave(-1);
-        }
+        first_page_replacement = 0;
+        if(v_cache)
+          initialize_victim_cache();
       }
-      if(v_cache && !first_page_replacement) //first page replacement has occured
+      uintptr_t victim = remove_victim_page();
+      uintptr_t victim_page_enc=pop_item[1];
+      uintptr_t victim_page_org=0;
+      if(victim != QUEUE_EMPTY)
       {
-        int cache_hit = is_in_victim_cache(addr);
-        printf("[runtime] Addr 0x%zx is in victim cache? %d\n", addr, cache_hit);
-        if(cache_hit && (enable_oram == WORAM || enable_oram==PATH_ORAM))
+        
+        uintptr_t stored_victim_page_addr=1;
+        uintptr_t *status_find_pte_victim = __walk(root_page_table_addr,victim_page_enc);// get the pte of this victim page by doing a pge table walk
+        victim_page_org=__va(  ( (*status_find_pte_victim)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
+        if((enable_oram==WORAM)|| ((*status_find_pte_victim) & PTE_D ) || enable_oram==OPAM || enable_oram==ENC_PFH  ||  (   (exc==1) && (enable_oram==PATH_ORAM || enable_oram==RORAM )  )   )
         {
-          move_page_to_enclave_from_cache(addr);
-          printf("[runtime] Before validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
-          *status_find_address = *status_find_address | PTE_V | PTE_E;
-          printf("[runtime] After validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
-          uintptr_t va_runtime = __va(((*status_find_address)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
-          if(place_new_page(va_runtime, vpn(addr)<<RISCV_PAGE_BITS)!=ENQUE_SUCCESS)
-          {
-            printf("[runtime] Page replacement queue full. Can't handle. \n" );
-            sbi_exit_enclave(-1);
-          }
-          return;
+          if(debug)
+            printf("[runtime] addr = 0x%lx dirty\n",victim_page_enc );
+          if(enable_oram==NO_ORAM)
+            kick_NoORAM(victim_page_enc, victim_page_org, stored_victim_page_addr);
+          else if(enable_oram==ENC_PFH)
+            kick_ENC_PFH(victim_page_enc,victim_page_org);
+          else if(enable_oram==PATH_ORAM)
+            kickPathORAM_with_victim(victim_page_enc, status_find_pte_victim, addr);
+          else if(enable_oram==OPAM)
+            kickOPAM(victim_page_enc, victim_page_org, status_find_pte_victim, victim, root_page_table_addr);
+          else if(enable_oram==RORAM)
+            kickRORAM_with_victim(victim_page_enc, status_find_pte_victim,addr);
+          else if(enable_oram==WORAM)
+            kickWORAM_with_victim(victim_page_enc, victim_page_org, status_find_pte_victim, addr);
         }
-      } 
-
-      // Allocate new page for addr 
-      uintptr_t new_alloc_page = 0;
-      new_alloc_page = spa_get();// get new page from the list of free pages
-      alloc++;
-      if(place_new_page(  new_alloc_page,vpn(addr)<<RISCV_PAGE_BITS    )!=ENQUE_SUCCESS)
-      {
-        printf("[runtime] Page replacement queue full. Can't handle. \n" );
-        sbi_exit_enclave(-1);
+        
+        if(enable_oram != WORAM && enable_oram != PATH_ORAM && enable_oram != RORAM) //original code for other page fault handlers
+        {
+          free_page(vpn(victim_page_enc));
+          alloc--;
+          *status_find_pte_victim = (stored_victim_page_addr << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
+        }
+        
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
       }
-      
-      int extension=0;
-      if(source_page_VA!=0)
-            extension=0;
       else
       {
-        extension=1;
-        count_ext++;
+        printf("[runtime] Page replacement queue empty. Can't handle. \n" );
+        sbi_exit_enclave(-1);
       }
-      if(enable_oram==NO_ORAM)
+    }
+    if(v_cache && !first_page_replacement) //first page replacement has occured
+    {
+      int cache_hit = is_in_victim_cache(addr);
+      printf("[runtime] Addr 0x%zx is in victim cache? %d\n", addr, cache_hit);
+      if(cache_hit && (enable_oram == WORAM || enable_oram==PATH_ORAM || enable_oram==RORAM))
       {
-        if(extension==1)
-          allocate_fresh_page(new_alloc_page, status_find_address);
-        else
+        move_page_to_enclave_from_cache(addr);
+        printf("[runtime] Before validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
+        *status_find_address = *status_find_address | PTE_V | PTE_E;
+        printf("[runtime] After validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
+        uintptr_t va_runtime = __va(((*status_find_address)>>PTE_PPN_SHIFT)<<RISCV_PAGE_BITS);
+        if(place_new_page(va_runtime, vpn(addr)<<RISCV_PAGE_BITS)!=ENQUE_SUCCESS)
         {
-          pages_read++;
-          edge_data_t pkgstr;
-          ocall_get_page_contents_from_utm((void*)&pkgstr,(vpn(addr))<<RISCV_PAGE_BITS);
-          handle_copy_from_shared((void*)&brought_page,pkgstr.offset,pkgstr.size);
-          if(authentication)
-          {
-            char calc_hmac[HASH_SIZE];
-            calculate_hmac(&brought_page,calc_hmac,HASH_SIZE);
-            if(!check_hashes((void*)calc_hmac ,HASH_SIZE, (void*)brought_page.hmac ,HASH_SIZE ))
-            {
-              printf("[runtime] Page corrupted. HMAC integrity check failed.  Fatal error for address 0x%lx\n",brought_page.address);
-              sbi_exit_enclave(-1);
-            }
-          }
-          if(confidentiality)
-          {
-            decrypt_page((uint8_t*)brought_page.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*)iv_aes);
-            decrypt_page((uint8_t*)&brought_page.ver_num,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)iv_aes);
-          }
-          if(authentication && version_numbers[vpn(addr)] !=  brought_page.ver_num)
-          {
-            printf("[runtime] Page corrupted(Possibly a replay attack).  Fatal error for address 0x%lx and brought_page.ver_num= 0x%lx and version_num[]=0x%lx\n",brought_page.address,brought_page.ver_num,version_numbers[vpn(addr)]);
-            sbi_exit_enclave(-1);
-          }
-          // now check version numbers
-          memcpy((void*)new_alloc_page,(void*)brought_page.data,RISCV_PAGE_SIZE);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D|PTE_A | PTE_V|PTE_R | PTE_X | PTE_W | PTE_U  | PTE_L );//updating the page table entry with the address of the newly allcated page
-
-          *status_find_address =(*status_find_address)|PTE_V|PTE_E;
-          prev_addr_status=status_find_address;
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-
-
-        }
-      }
-
-      if(enable_oram==ENC_PFH)
-      {
-        if(extension==1)
-        {
-          memset((void*)new_alloc_page, 0, RISCV_PAGE_SIZE);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D|PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-        }
-        else
-        {
-          pages_read++;
-          edge_data_t pkgstr;
-          uintptr_t adr[2];
-          adr[0]=vpn(addr)<<RISCV_PAGE_BITS;
-          adr[1]=0;
-          encrypt_page((uint8_t*)adr,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
-          ocall_get_page_contents_from_utm_enc_pfh((void*)&pkgstr,adr[0]);
-          handle_copy_from_shared((void*)&brought_page_at,pkgstr.offset,pkgstr.size);
-          char calc_hmac[HASH_SIZE];
-          calculate_hmac_for_enc_pfh(&brought_page_at,calc_hmac,HASH_SIZE);
-          if(!check_hashes((void*)calc_hmac ,HASH_SIZE, (void*)brought_page_at.hmac ,HASH_SIZE ))
-          {
-            printf("[runtime] Page corrupted. HMAC integrity check failed.  Fatal error\n");
-            sbi_exit_enclave(-1);
-          }
-
-          if(confidentiality)
-            decrypt_page((uint8_t*)brought_page_at.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
-
-          decrypt_page((uint8_t*)&brought_page_at.address,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
-          memcpy((void*)new_alloc_page,(void*)brought_page_at.data,RISCV_PAGE_SIZE);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_A| PTE_D | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-          if(tracing && (   (pages_written+pages_read)>THRESHOLD_OPS  ||  (real_pages_written+real_pages_read)>THRESHOLD_OPS  ) )
-            sbi_exit_enclave(-1);
-
-
-        }
-      }
-      else if(enable_oram==PATH_ORAM)
-      {
-        if(extension==0){
-          access('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A |PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-        }
-        else
-        {
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-        }
-      }
-      else if(enable_oram==OPAM)
-      {
-        if(extension==0)
-        {
-          access_opam('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A | PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-          if(tracing && (   (real_pages_written+real_pages_read)>THRESHOLD_OPS  ) )
-            sbi_exit_enclave(-1);
-        }
-        else
-        {
-          memset((void*)new_alloc_page,0,RISCV_PAGE_SIZE);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-        }
-      }
-      else if(enable_oram==RORAM)
-      {
-        if(extension==0)
-        {
-          access_roram('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A | PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-          if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
-            sbi_exit_enclave(-1);
-        }
-        else
-        {
-          memset((void*)new_alloc_page,0,RISCV_PAGE_SIZE);
-          *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
-          asm volatile ("fence.i\t\nsfence.vma\t\n");
-          if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
-            sbi_exit_enclave(-1);
-        }
-      }
-      else if(enable_oram==WORAM)
-      {
-        /* --------------------------------------------------------------------------------------
-                                          ONLY FOR WORAM
-        -----------------------------------------------------------------------------------------
-        a) If Extension = 1, this means that an extended(malloced) address is being accessed for
-           the first time. Allocate a fresh zeroed out page for it. 
-        b) If Extention = 0, Get the page from woram. 
-           (The Code reaches this point only when there was a cache miss for the page)
-        -----------------------------------------------------------------------------------------
-        */
-        if(extension==1) 
-        {
-          allocate_fresh_page(new_alloc_page, status_find_address);
-          prev_addr_status=status_find_address; //This can be removed, possibly used by nirjhar somewhere
-        }
-        else
-        {
-          get_page_from_woram(addr, new_alloc_page, status_find_address, fault_mode, confidentiality, authentication);
-          prev_addr_status=status_find_address; //This can be removed, possibly used by nirjhar somewhere
-          pages_read++;
-        }
-      }
-
-
-      if(debug)
-        print_details();
-      asm volatile ("fence.i\t\nsfence.vma\t\n");
-
-      if(fault_lim!=0 )
-      {
-        if(countpf>=fault_lim)
-        {
-          print_details();
+          printf("[runtime] Page replacement queue full. Can't handle. \n" );
           sbi_exit_enclave(-1);
         }
+        return;
       }
-      return;
+    } 
+
+    // Allocate new page for addr 
+    uintptr_t new_alloc_page = 0;
+    new_alloc_page = spa_get();// get new page from the list of free pages
+    alloc++;
+    if(place_new_page(  new_alloc_page,vpn(addr)<<RISCV_PAGE_BITS    )!=ENQUE_SUCCESS)
+    {
+      printf("[runtime] Page replacement queue full. Can't handle. \n" );
+      sbi_exit_enclave(-1);
     }
+    
+    int extension=0;
+    if(source_page_VA!=0)
+          extension=0;
+    else
+    {
+      extension=1;
+      count_ext++;
+    }
+    if(enable_oram==NO_ORAM)
+    {
+      if(extension==1)
+        allocate_fresh_page(new_alloc_page, status_find_address);
+      else
+      {
+        pages_read++;
+        edge_data_t pkgstr;
+        ocall_get_page_contents_from_utm((void*)&pkgstr,(vpn(addr))<<RISCV_PAGE_BITS);
+        handle_copy_from_shared((void*)&brought_page,pkgstr.offset,pkgstr.size);
+        if(authentication)
+        {
+          char calc_hmac[HASH_SIZE];
+          calculate_hmac(&brought_page,calc_hmac,HASH_SIZE);
+          if(!check_hashes((void*)calc_hmac ,HASH_SIZE, (void*)brought_page.hmac ,HASH_SIZE ))
+          {
+            printf("[runtime] Page corrupted. HMAC integrity check failed.  Fatal error for address 0x%lx\n",brought_page.address);
+            sbi_exit_enclave(-1);
+          }
+        }
+        if(confidentiality)
+        {
+          decrypt_page((uint8_t*)brought_page.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*)iv_aes);
+          decrypt_page((uint8_t*)&brought_page.ver_num,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)iv_aes);
+        }
+        if(authentication && version_numbers[vpn(addr)] !=  brought_page.ver_num)
+        {
+          printf("[runtime] Page corrupted(Possibly a replay attack).  Fatal error for address 0x%lx and brought_page.ver_num= 0x%lx and version_num[]=0x%lx\n",brought_page.address,brought_page.ver_num,version_numbers[vpn(addr)]);
+          sbi_exit_enclave(-1);
+        }
+        // now check version numbers
+        memcpy((void*)new_alloc_page,(void*)brought_page.data,RISCV_PAGE_SIZE);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D|PTE_A | PTE_V|PTE_R | PTE_X | PTE_W | PTE_U  | PTE_L );//updating the page table entry with the address of the newly allcated page
+
+        *status_find_address =(*status_find_address)|PTE_V|PTE_E;
+        prev_addr_status=status_find_address;
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+
+
+      }
+    }
+    if(enable_oram==ENC_PFH)
+    {
+      if(extension==1)
+      {
+        memset((void*)new_alloc_page, 0, RISCV_PAGE_SIZE);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D|PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+      }
+      else
+      {
+        pages_read++;
+        edge_data_t pkgstr;
+        uintptr_t adr[2];
+        adr[0]=vpn(addr)<<RISCV_PAGE_BITS;
+        adr[1]=0;
+        encrypt_page((uint8_t*)adr,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
+        ocall_get_page_contents_from_utm_enc_pfh((void*)&pkgstr,adr[0]);
+        handle_copy_from_shared((void*)&brought_page_at,pkgstr.offset,pkgstr.size);
+        char calc_hmac[HASH_SIZE];
+        calculate_hmac_for_enc_pfh(&brought_page_at,calc_hmac,HASH_SIZE);
+        if(!check_hashes((void*)calc_hmac ,HASH_SIZE, (void*)brought_page_at.hmac ,HASH_SIZE ))
+        {
+          printf("[runtime] Page corrupted. HMAC integrity check failed.  Fatal error\n");
+          sbi_exit_enclave(-1);
+        }
+
+        if(confidentiality)
+          decrypt_page((uint8_t*)brought_page_at.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
+
+        decrypt_page((uint8_t*)&brought_page_at.address,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(addr)].iv);
+        memcpy((void*)new_alloc_page,(void*)brought_page_at.data,RISCV_PAGE_SIZE);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_A| PTE_D | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+        if(tracing && (   (pages_written+pages_read)>THRESHOLD_OPS  ||  (real_pages_written+real_pages_read)>THRESHOLD_OPS  ) )
+          sbi_exit_enclave(-1);
+
+
+      }
+    }
+    else if(enable_oram==PATH_ORAM)
+    {
+      if(extension==0){
+        access('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A |PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+      }
+      else
+      {
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+      }
+    }
+    else if(enable_oram==OPAM)
+    {
+      if(extension==0)
+      {
+        access_opam('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A | PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+        if(tracing && (   (real_pages_written+real_pages_read)>THRESHOLD_OPS  ) )
+          sbi_exit_enclave(-1);
+      }
+      else
+      {
+        memset((void*)new_alloc_page,0,RISCV_PAGE_SIZE);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+      }
+    }
+    else if(enable_oram==RORAM)
+    {
+      if(extension==0)
+      {
+        access_roram('r',vpn(addr),NULL,(char*)new_alloc_page,extension);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ),  PTE_A | PTE_D| PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+        if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
+          sbi_exit_enclave(-1);
+      }
+      else
+      {
+        memset((void*)new_alloc_page,0,RISCV_PAGE_SIZE);
+        *status_find_address = pte_create( ppn(__pa(new_alloc_page) ), PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_V | PTE_L|PTE_E );//updating the page table entry with the address of the newly allcated page
+        asm volatile ("fence.i\t\nsfence.vma\t\n");
+        if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
+          sbi_exit_enclave(-1);
+      }
+    }
+    else if(enable_oram==WORAM)
+    {
+      /* --------------------------------------------------------------------------------------
+                                        ONLY FOR WORAM
+      -----------------------------------------------------------------------------------------
+      a) If Extension = 1, this means that an extended(malloced) address is being accessed for
+          the first time. Allocate a fresh zeroed out page for it. 
+      b) If Extention = 0, Get the page from woram. 
+          (The Code reaches this point only when there was a cache miss for the page)
+      -----------------------------------------------------------------------------------------
+      */
+      if(extension==1) 
+      {
+        allocate_fresh_page(new_alloc_page, status_find_address);
+        prev_addr_status=status_find_address; //This can be removed, possibly used by nirjhar somewhere
+      }
+      else
+      {
+        get_page_from_woram(addr, new_alloc_page, status_find_address, fault_mode, confidentiality, authentication);
+        prev_addr_status=status_find_address; //This can be removed, possibly used by nirjhar somewhere
+        pages_read++;
+      }
+    }
+
+
+    if(debug)
+      print_details();
+    asm volatile ("fence.i\t\nsfence.vma\t\n");
+
+    if(fault_lim!=0 )
+    {
+      if(countpf>=fault_lim)
+      {
+        print_details();
+        sbi_exit_enclave(-1);
+      }
+    }
+    return;
+  }
     else// actual page fault(seg fault) NOT LEGAL
     {
       printf("[runtime] A real page fault on 0x%lx\n",addr);// uncomment
@@ -1261,7 +1208,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
       sbi_exit_enclave(-1);
     }
 }
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
 uintptr_t rt_handle_sbrk(size_t bytes)
 {
     is_rt=1;
