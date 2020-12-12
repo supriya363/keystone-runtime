@@ -103,7 +103,7 @@ extern counter counters[NO_OF_COUNTERS];
 #define ORAM_INIT 14
 #define COPY_WASTE 15
 int pow(uintptr_t a, uintptr_t b);
-#define ARITY 16.0//16.0  4.0
+#define ARITY 2.0 //16.0//16.0  4.0
 
 extern int confidentiality;
 extern uintptr_t fault_mode;
