@@ -110,7 +110,7 @@ uint8_t z1[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x1
 uint8_t z2[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
 
 char sss[30];
-#define THRESHOLD_OPS 999999999
+#define THRESHOLD_OPS 120000
 
 uintptr_t unplaced_pages_count=0;
 
@@ -371,6 +371,24 @@ uintptr_t get_runtime_addr(uintptr_t victim_page_enc)
   return va_runtime;
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
+void ENC_PFH_write(uintptr_t enc_addr, uintptr_t org_addr){
+  pages_written++;
+  edge_data_t pkgstr;
+  memcpy((void*)vic_page_at.data,(void*)org_addr,RISCV_PAGE_SIZE  );
+  vic_page_at.address=vpn(enc_addr)<<RISCV_PAGE_BITS;
+  vic_page_at.dummy=0;
+  version_numbers[vpn(enc_addr)]++;
+  rt_util_getrandom((void*) p_ivs[vpn(enc_addr)].iv, AES_KEYLEN);
+  if(confidentiality)
+    encrypt_page((uint8_t*)vic_page_at.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*) p_ivs[vpn(enc_addr)].iv);
+
+  encrypt_page((uint8_t*)&vic_page_at.address,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(enc_addr)].iv);
+  calculate_hmac_for_enc_pfh(&vic_page_at,vic_page_at.hmac,HASH_SIZE);
+  ocall_store_page_contents_to_utm_enc_pfh((void*)&pkgstr,(uintptr_t)&vic_page_at);
+  if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
+    sbi_exit_enclave(-1);
+}
+//--------------------------------------------------------------------------------------------------------------------------------------
 //NOTE - JUST WRITES TO WORAM RIGHT NOW
 //REQUIREMENT - Victim Cache size should be atleast 1
 void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr) 
@@ -396,7 +414,7 @@ void write_to_victim_cache_handle_full(uintptr_t addr, uintptr_t req_addr)
       if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
         sbi_exit_enclave(-1);
     }
-
+    else if (enable_oram ==ENC_PFH) ENC_PFH_write(page_out, page_out_va);
     pages_written++;
   }
     
@@ -765,22 +783,17 @@ void kick_NoORAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t
   handle_copy_from_shared((void*)&stored_victim_page_addr,pkgstr.offset,pkgstr.size);
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
-void kick_ENC_PFH(uintptr_t victim_page_enc, uintptr_t victim_page_org){
-  pages_written++;
-  edge_data_t pkgstr;
-  memcpy((void*)vic_page_at.data,(void*)victim_page_org,RISCV_PAGE_SIZE  );
-  vic_page_at.address=vpn(victim_page_enc)<<RISCV_PAGE_BITS;
-  vic_page_at.dummy=0;
-  version_numbers[vpn(victim_page_enc)]++;
-  rt_util_getrandom((void*) p_ivs[vpn(victim_page_enc)].iv, AES_KEYLEN);
-  if(confidentiality)
-    encrypt_page((uint8_t*)vic_page_at.data,RISCV_PAGE_SIZE,(uint8_t*)key_aes,(uint8_t*) p_ivs[vpn(victim_page_enc)].iv);
-
-  encrypt_page((uint8_t*)&vic_page_at.address,2*sizeof(uintptr_t),(uint8_t*)key_aes,(uint8_t*)p_ivs[vpn(victim_page_enc)].iv);
-  calculate_hmac_for_enc_pfh(&vic_page_at,vic_page_at.hmac,HASH_SIZE);
-  ocall_store_page_contents_to_utm_enc_pfh((void*)&pkgstr,(uintptr_t)&vic_page_at);
-  if(tracing && (pages_written+pages_read)>THRESHOLD_OPS)
-    sbi_exit_enclave(-1);
+void kick_ENC_PFH_with_victim(uintptr_t vicPageEnc, uintptr_t victim_page_org, uintptr_t *victimPTE, uintptr_t addr){
+  if(v_cache){
+    vcache_routine(vicPageEnc, victimPTE, addr);
+    return;
+  }
+  ENC_PFH_write(vicPageEnc, victim_page_org);
+  free_page(vpn(vicPageEnc));	//free the page, so that sp_get() has free pages to work with.
+  *victimPTE  = (*victimPTE) & ~PTE_V;
+  alloc--;
+  *victimPTE = (1 << PTE_PPN_SHIFT) | (PTE_D| PTE_A | PTE_R | PTE_X | PTE_W | PTE_U | PTE_L);
+  
 }
 //--------------------------------------------------------------------------------------------------------------------------------------
 void kickOPAM(uintptr_t victim_page_enc, uintptr_t victim_page_org, uintptr_t *status_find_pte_victim, uintptr_t victim, uintptr_t *root_page_table_addr){
@@ -969,7 +982,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
           if(enable_oram==NO_ORAM)
             kick_NoORAM(victim_page_enc, victim_page_org, stored_victim_page_addr);
           else if(enable_oram==ENC_PFH)
-            kick_ENC_PFH(victim_page_enc,victim_page_org);
+            kick_ENC_PFH_with_victim(victim_page_enc,victim_page_org,status_find_pte_victim,addr);
           else if(enable_oram==PATH_ORAM)
             kickPathORAM_with_victim(victim_page_enc, status_find_pte_victim, addr);
           else if(enable_oram==OPAM)
@@ -980,7 +993,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
             kickWORAM_with_victim(victim_page_enc, victim_page_org, status_find_pte_victim, addr);
         }
         
-        if(enable_oram != WORAM && enable_oram != PATH_ORAM && enable_oram != RORAM) //original code for other page fault handlers
+        if(enable_oram != WORAM && enable_oram != PATH_ORAM && enable_oram != RORAM && enable_oram!=ENC_PFH) //original code for other page fault handlers
         {
           free_page(vpn(victim_page_enc));
           alloc--;
@@ -999,7 +1012,7 @@ void handle_page_fault(uintptr_t addr, uintptr_t *status_find_address)
     {
       int cache_hit = is_in_victim_cache(addr);
       printf("[runtime] Addr 0x%zx is in victim cache? %d\n", addr, cache_hit);
-      if(cache_hit && (enable_oram == WORAM || enable_oram==PATH_ORAM || enable_oram==RORAM))
+      if(cache_hit && (enable_oram == WORAM || enable_oram==PATH_ORAM || enable_oram==RORAM || enable_oram==ENC_PFH))
       {
         move_page_to_enclave_from_cache(addr);
         printf("[runtime] Before validating pte entry of 0x%zx -> 0x%zx", addr, *status_find_address);
@@ -1241,7 +1254,7 @@ uintptr_t rt_handle_sbrk(size_t bytes)
     csr_set(sie, SIE_STIE | SIE_SSIE);
     return old_pbrk;
 }
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
 uintptr_t rt_handle_sbrk_rt(size_t bytes)
 {
     uintptr_t old_pbrk = get_program_break_rt();
@@ -1263,7 +1276,7 @@ uintptr_t rt_handle_sbrk_rt(size_t bytes)
     set_program_break_rt(new_pbrk);
     return old_pbrk;
 }
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
 void rt_page_fault(struct encl_ctx_t* ctx)
 {
 
@@ -1297,4 +1310,4 @@ void rt_page_fault(struct encl_ctx_t* ctx)
   is_rt=0;
 #endif
 }
-//------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------------------------------------------
